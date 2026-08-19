@@ -1,0 +1,108 @@
+package com.oyvey.modules.combat;
+
+import com.oyvey.Oyvey;
+import com.oyvey.event.events.UpdateEvent;
+import com.oyvey.module.Module;
+import com.oyvey.setting.Setting;
+import net.minecraft.entity.Entity;
+import net.minecraft.network.play.client.CPacketPlayer;
+import net.minecraft.util.math.MathHelper;
+
+public class MaceSmash extends Module {
+    // Settings for customization
+    private final Setting<Double> height = register(new Setting<>("Height", 100.0, 10.0, 300.0));
+    private final Setting<Boolean> syncOnHit = register(new Setting<>("SyncOnHit", true));
+    private final Setting<Boolean> stopAfterHit = register(new Setting<>("StopAfterHit", true));
+
+    private boolean active = false;
+    private double serverY;
+    private double velocityY;
+    private double startY;
+    private boolean hitEntity = false;
+
+    public MaceSmash() {
+        super("MaceSmash", "Simulate a high fall for Mace smash damage", Category.COMBAT);
+    }
+
+    @Override
+    public void onEnable() {
+        if (mc.player == null) {
+            disable();
+            return;
+        }
+        
+        active = true;
+        hitEntity = false;
+        
+        // Initialize fall simulation
+        this.startY = mc.player.posY + height.get();
+        this.serverY = this.startY;
+        this.velocityY = 0;
+        
+        // Send initial state: High up, not on ground
+        sendFakePosition(mc.player.posX, serverY, mc.player.posZ, false);
+    }
+
+    @Override
+    public void onDisable() {
+        active = false;
+        // Force sync to actual position so we don't get desynced permanently
+        syncToServer();
+    }
+
+    @Override
+    public void onUpdate() {
+        if (!active || mc.player == null) return;
+
+        // 1. Simulate Gravity on Server View
+        // Gravity in Minecraft is ~0.08 blocks per tick squared
+        velocityY -= 0.08;
+        serverY += velocityY;
+
+        // 2. Check if we "landed" on the server's view
+        if (serverY <= mc.player.posY) {
+            serverY = mc.player.posY; // Snap to actual ground
+            if (stopAfterHit.get()) {
+                disable();
+                return;
+            }
+        }
+
+        // 3. Send Fake Position
+        // We send our ACTUAL X/Z and YAW/PITCH
+        // But we send the FAKE Y (serverY) and onGround=false
+        sendFakePosition(mc.player.posX, serverY, mc.player.posZ, false);
+
+        // 4. Optional: Sync if we hit something (if setting enabled)
+        if (syncOnHit.get()) {
+            // This is a simple check. In a real skid, you'd hook into the attack event
+            // to detect if you hit an entity with the mace.
+        }
+    }
+
+    private void sendFakePosition(double x, double y, double z, boolean onGround) {
+        // Construct the packet
+        // Note: In Oyvey 1.12.2/1.16.5, CPacketPlayer handles this.
+        // For 1.21.5, you might need to adjust the packet class if the API changed.
+        CPacketPlayer packet = new CPacketPlayer.Position(x, y, z, 
+            mc.player.rotationYaw, mc.player.rotationPitch, onGround);
+        
+        mc.getNetHandler().getNetworkManager().writePacket(packet);
+    }
+
+    private void syncToServer() {
+        sendFakePosition(mc.player.posX, mc.player.posY, mc.player.posZ, true);
+    }
+    
+    // Hook this into your AttackEvent or KeyBindPress event to detect Mace hit
+    public void onAttack() {
+        hitEntity = true;
+        if (syncOnHit.get() || stopAfterHit.get()) {
+            // Optional: Sync immediately after hit to prevent weird physics
+            syncToServer();
+            if (stopAfterHit.get()) {
+                disable();
+            }
+        }
+    }
+}
